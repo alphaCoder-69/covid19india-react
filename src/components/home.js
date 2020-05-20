@@ -1,261 +1,244 @@
-import React, {useState, useEffect} from 'react';
-import axios from 'axios';
-import {formatDistance, format} from 'date-fns';
+import Footer from './footer';
+import Level from './level';
+import MapExplorer from './mapexplorer';
+import Minigraph from './minigraph';
+import Search from './search';
+import Table from './table';
+import TimeSeriesExplorer from './timeseriesexplorer';
+import Updates from './updates';
+
+import {STATE_CODES_REVERSE} from '../constants';
 import {
   formatDate,
   formatDateAbsolute,
-  validateCTS,
-} from '../utils/common-functions';
-import * as Icon from 'react-feather';
-import {Link} from 'react-router-dom';
+  mergeTimeseries,
+  preprocessTimeseries,
+  parseStateTimeseries,
+  parseStateTestData,
+  parseStateTestTimeseries,
+  parseTotalTestTimeseries,
+  parseDistrictZones,
+} from '../utils/commonfunctions';
 
-import Table from './table';
-import Level from './level';
-import MapExplorer from './mapexplorer';
-import TimeSeries from './timeseries';
-import Minigraph from './minigraph';
+import axios from 'axios';
+import React, {useState, useCallback, useMemo} from 'react';
+import * as Icon from 'react-feather';
+import {Helmet} from 'react-helmet';
+import {useEffectOnce, useLocalStorage} from 'react-use';
 
 function Home(props) {
-  const [states, setStates] = useState([]);
-  const [stateDistrictWiseData, setStateDistrictWiseData] = useState({});
-  /* const [patients, setPatients] = useState([]);*/
-  const [fetched, setFetched] = useState(false);
-  const [graphOption, setGraphOption] = useState(1);
+  const [states, setStates] = useState(null);
+  const [stateDistrictWiseData, setStateDistrictWiseData] = useState(null);
+  const [districtZones, setDistrictZones] = useState(null);
+  const [stateTestData, setStateTestData] = useState(null);
   const [lastUpdated, setLastUpdated] = useState('');
-  const [timeseries, setTimeseries] = useState([]);
-  const [activityLog, setActivityLog] = useState([]);
-  const [timeseriesMode, setTimeseriesMode] = useState(true);
-  const [timeseriesLogMode, setTimeseriesLogMode] = useState(false);
-  const [regionHighlighted, setRegionHighlighted] = useState(undefined);
+  const [timeseries, setTimeseries] = useState(null);
+  const [fetched, setFetched] = useState(false);
+  const [regionHighlighted, setRegionHighlighted] = useState({
+    state: 'Total',
+  });
+  const [showUpdates, setShowUpdates] = useState(false);
+  const [anchor, setAnchor] = useState(null);
+  const [mapOption, setMapOption] = useState('confirmed');
 
-  useEffect(() => {
-    if (fetched === false) {
-      getStates();
-    }
-  }, [fetched]);
+  const [lastViewedLog, setLastViewedLog] = useLocalStorage(
+    'lastViewedLog',
+    null
+  );
+  const [newUpdate, setNewUpdate] = useLocalStorage('newUpdate', false);
+
+  const Bell = useMemo(
+    () => (
+      <Icon.Bell
+        onClick={() => {
+          setShowUpdates(!showUpdates);
+          setNewUpdate(false);
+        }}
+      />
+    ),
+    [setNewUpdate, showUpdates]
+  );
+
+  const BellOff = useMemo(
+    () => (
+      <Icon.BellOff
+        onClick={() => {
+          setShowUpdates(!showUpdates);
+        }}
+      />
+    ),
+    [showUpdates]
+  );
+
+  useEffectOnce(() => {
+    getStates();
+  });
+
+  useEffectOnce(() => {
+    axios
+      .get('https://api.covid19india.org/updatelog/log.json')
+      .then((response) => {
+        const lastTimestamp = response.data
+          .slice()
+          .reverse()[0]
+          .timestamp.toString();
+        if (lastTimestamp !== lastViewedLog) {
+          setNewUpdate(true);
+          setLastViewedLog(lastTimestamp);
+        }
+      })
+      .catch((err) => {
+        console.log(err);
+      });
+  });
 
   const getStates = async () => {
     try {
       const [
-        response,
-        stateDistrictWiseResponse,
-        updateLogResponse,
+        {data: statesDailyResponse},
+        {data: zonesResponse},
+      ] = await Promise.all([
+        axios.get('https://api.covid19india.org/states_daily.json'),
+        axios.get('https://api.covid19india.org/zones.json'),
+      ]);
+
+      const [
+        {data},
+        {data: stateDistrictWiseResponse},
+        {data: stateTestData},
       ] = await Promise.all([
         axios.get('https://api.covid19india.org/data.json'),
         axios.get('https://api.covid19india.org/state_district_wise.json'),
-        axios.get('https://api.covid19india.org/updatelog/log.json'),
+        axios.get('https://api.covid19india.org/state_test_data.json'),
       ]);
-      setStates(response.data.statewise);
-      setTimeseries(validateCTS(response.data.cases_time_series));
-      setLastUpdated(response.data.statewise[0].lastupdatedtime);
-      setStateDistrictWiseData(stateDistrictWiseResponse.data);
-      setActivityLog(updateLogResponse.data);
-      /* setPatients(rawDataResponse.data.raw_data.filter((p) => p.detectedstate));*/
+
+      setStates(data.statewise);
+      setDistrictZones(parseDistrictZones(zonesResponse.zones));
+
+      const ts = parseStateTimeseries(statesDailyResponse);
+      ts['TT'] = preprocessTimeseries(data.cases_time_series);
+      // Testing data timeseries
+      const testTs = parseStateTestTimeseries(stateTestData.states_tested_data);
+      testTs['TT'] = parseTotalTestTimeseries(data.tested);
+      // Merge
+      const tsMerged = mergeTimeseries(ts, testTs);
+      setTimeseries(tsMerged);
+
+      setLastUpdated(data.statewise[0].lastupdatedtime);
+
+      const testData = parseStateTestData(stateTestData.states_tested_data);
+      const totalTest = data.tested[data.tested.length - 1];
+      testData['Total'] = {
+        source: totalTest.source,
+        totaltested: totalTest.totalsamplestested,
+        updatedon: totalTest.updatetimestamp.split(' ')[0],
+      };
+      setStateTestData(testData);
+
+      setStateDistrictWiseData(stateDistrictWiseResponse);
       setFetched(true);
     } catch (err) {
       console.log(err);
     }
   };
 
-  const onHighlightState = (state, index) => {
-    if (!state && !index) setRegionHighlighted(null);
-    else setRegionHighlighted({state, index});
-  };
-  const onHighlightDistrict = (district, state, index) => {
-    if (!state && !index && !district) setRegionHighlighted(null);
-    else setRegionHighlighted({district, state, index});
-  };
+  const onHighlightState = useCallback((state) => {
+    if (!state) return setRegionHighlighted(null);
+    setRegionHighlighted({state: state.state});
+  }, []);
+
+  const onHighlightDistrict = useCallback((district, state) => {
+    if (!state && !district) return setRegionHighlighted(null);
+    setRegionHighlighted({district, state: state.state});
+  }, []);
 
   return (
     <React.Fragment>
       <div className="Home">
+        <Helmet>
+          <title>Coronavirus Outbreak in India - covid19india.org</title>
+          <meta
+            name="title"
+            content="Coronavirus Outbreak in India: Latest Map and Case Count"
+          />
+        </Helmet>
+
         <div className="home-left">
           <div className="header fadeInUp" style={{animationDelay: '1s'}}>
-            <div className="header-mid">
-              <div className="titles">
-                <h1>India COVID-19 Tracker</h1>
-                <h6 style={{fontWeight: 600}}>A Crowdsourced Initiative</h6>
-              </div>
-              <div className="last-update">
-                <h6>Last Updated</h6>
-                <h6 style={{color: '#28a745', fontWeight: 600}}>
-                  {isNaN(Date.parse(formatDate(lastUpdated)))
-                    ? ''
-                    : formatDistance(
-                        new Date(formatDate(lastUpdated)),
-                        new Date()
-                      ) + ' Ago'}
-                </h6>
-                <h6 style={{color: '#28a745', fontWeight: 600}}>
-                  {isNaN(Date.parse(formatDate(lastUpdated)))
-                    ? ''
-                    : formatDateAbsolute(lastUpdated)}
-                </h6>
-              </div>
+            {fetched && <Search districtZones={districtZones} />}
+
+            <div className="actions">
+              <h5>
+                {isNaN(Date.parse(formatDate(lastUpdated)))
+                  ? ''
+                  : `${formatDateAbsolute(lastUpdated)} IST`}
+              </h5>
+              {fetched && !showUpdates && (
+                <div className="bell-icon">
+                  {fetched && Bell}
+                  {newUpdate && <div className="indicator"></div>}
+                </div>
+              )}
+              {fetched && showUpdates && BellOff}
             </div>
           </div>
 
-          {states.length > 1 && <Level data={states} />}
-          <Minigraph timeseries={timeseries} animate={true} />
-          <Table
-            states={states}
-            summary={false}
-            stateDistrictWiseData={stateDistrictWiseData}
-            onHighlightState={onHighlightState}
-            onHighlightDistrict={onHighlightDistrict}
-          />
-        </div>
+          {showUpdates && <Updates />}
 
-        <div className="home-right">
-          {fetched && (
-            <React.Fragment>
-              <MapExplorer
-                states={states}
-                stateDistrictWiseData={stateDistrictWiseData}
-                regionHighlighted={regionHighlighted}
-              />
-
-              <div
-                className="timeseries-header fadeInUp"
-                style={{animationDelay: '2.5s'}}
-              >
-                <h1>Spread Trends</h1>
-                <div className="tabs">
-                  <div
-                    className={`tab ${graphOption === 1 ? 'focused' : ''}`}
-                    onClick={() => {
-                      setGraphOption(1);
-                    }}
-                  >
-                    <h4>Cumulative</h4>
-                  </div>
-                  <div
-                    className={`tab ${graphOption === 2 ? 'focused' : ''}`}
-                    onClick={() => {
-                      setGraphOption(2);
-                    }}
-                  >
-                    <h4>Daily</h4>
-                  </div>
-                </div>
-
-                <div className="scale-modes">
-                  <label>Scale Modes</label>
-                  <div className="timeseries-mode">
-                    <label htmlFor="timeseries-mode">Uniform</label>
-                    <input
-                      type="checkbox"
-                      checked={timeseriesMode}
-                      className="switch"
-                      aria-label="Checked by default to scale uniformly."
-                      onChange={(event) => {
-                        setTimeseriesMode(!timeseriesMode);
-                      }}
-                    />
-                  </div>
-                  <div
-                    className={`timeseries-logmode ${
-                      graphOption !== 1 ? 'disabled' : ''
-                    }`}
-                  >
-                    <label htmlFor="timeseries-logmode">Logarithmic</label>
-                    <input
-                      type="checkbox"
-                      checked={graphOption === 1 && timeseriesLogMode}
-                      className="switch"
-                      disabled={graphOption !== 1}
-                      onChange={(event) => {
-                        setTimeseriesLogMode(!timeseriesLogMode);
-                      }}
-                    />
-                  </div>
-                </div>
-              </div>
-
-              <TimeSeries
-                timeseries={timeseries}
-                type={graphOption}
-                mode={timeseriesMode}
-                logMode={timeseriesLogMode}
-              />
-            </React.Fragment>
+          {states && <Level data={states[0]} />}
+          {timeseries && <Minigraph timeseries={timeseries['TT']} />}
+          {stateDistrictWiseData && (
+            <Table
+              states={states}
+              summary={false}
+              districts={stateDistrictWiseData}
+              zones={districtZones}
+              regionHighlighted={regionHighlighted}
+              setRegionHighlighted={setRegionHighlighted}
+              onHighlightState={onHighlightState}
+              onHighlightDistrict={onHighlightDistrict}
+            />
           )}
         </div>
 
-        {/* <div className="home-left">
-        {patients.length > 1 && (
-          <div className="patients-summary">
-            <h1>Recent Cases</h1>
-            <h6>A summary of the latest reported cases</h6>
-            <div className="legend">
-              <div className="legend-left">
-                <div className="circle is-female"></div>
-                <h5 className="is-female">Female</h5>
-                <div className="circle is-male"></div>
-                <h5 className="is-male">Male</h5>
-                <div className="circle"></div>
-                <h5 className="">Unknown</h5>
-              </div>
-            </div>
-            <div className="patients-summary-wrapper">
-              <Patients
-                patients={patients}
-                summary={true}
-                colorMode={'genders'}
-                expand={true}
+        <div className="home-right">
+          <React.Fragment>
+            {fetched && (
+              <MapExplorer
+                mapName={'India'}
+                states={states}
+                districts={stateDistrictWiseData}
+                zones={districtZones}
+                stateTestData={stateTestData}
+                regionHighlighted={regionHighlighted}
+                setRegionHighlighted={setRegionHighlighted}
+                anchor={anchor}
+                setAnchor={setAnchor}
+                mapOption={mapOption}
+                setMapOption={setMapOption}
               />
-            </div>
-            <button className="button">
-              <Link to="/database">
-                <Icon.Database />
-                <span>View the Patients Database</span>
-              </Link>
-            </button>
-          </div>
-        )}
-      </div>
-      <div className="home-right"></div>
-    */}
-      </div>
+            )}
 
-      <div className="Home">
-        <div className="home-left">
-          <div
-            className="updates-header fadeInUp"
-            style={{animationDelay: '1.5s'}}
-          >
-            <h1>Updates</h1>
-            <h2>{format(new Date(), 'd MMM')}</h2>
-          </div>
-
-          <div className="updates fadeInUp" style={{animationDelay: '1.7s'}}>
-            {activityLog
-              .slice(-5)
-              .reverse()
-              .map(function (activity, index) {
-                return (
-                  <div key={index} className="update">
-                    <h5>
-                      {formatDistance(
-                        new Date(activity.timestamp * 1000),
-                        new Date()
-                      ) + ' Ago'}
-                    </h5>
-                    <h4>{activity.update}</h4>
-                  </div>
-                );
-              })}
-            <button className="button">
-              <Link to="/demographics">
-                <Icon.Database />
-                <span>Demographic Overview</span>
-              </Link>
-            </button>
-          </div>
+            {timeseries && (
+              <TimeSeriesExplorer
+                timeseries={
+                  timeseries[
+                    STATE_CODES_REVERSE[regionHighlighted?.state] || 'TT'
+                  ]
+                }
+                activeStateCode={
+                  STATE_CODES_REVERSE[regionHighlighted?.state] || 'TT'
+                }
+                onHighlightState={onHighlightState}
+                states={states}
+                anchor={anchor}
+                setAnchor={setAnchor}
+              />
+            )}
+          </React.Fragment>
         </div>
-
-        <div className="home-right"></div>
       </div>
+      {fetched && <Footer />}
     </React.Fragment>
   );
 }
